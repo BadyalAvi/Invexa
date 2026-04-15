@@ -78,7 +78,10 @@ flowchart TB
 UI[Frontend - React.js] --> API[Backend - Node.js / Express]
 API --> DB[PostgreSQL Database]
 API --> Logic[Business Logic Layer]
-Logic --> Modules[Inventory | Orders | Analytics | Reports]
+Logic --> M1[Inventory Module]
+Logic --> M2[Order Module]
+Logic --> M3[Analytics Module]
+Logic --> M4[Reporting Module]
 ```
 
 ---
