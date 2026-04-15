@@ -1,5 +1,5 @@
 # 🚀 Invexa – Smart Inventory Management System  
-### Smart Inventory. Simplified.
+### Smart Inventory
 
 ---
 
