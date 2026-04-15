@@ -153,6 +153,12 @@ Runs on: http://localhost:5173
 ### 📦 Inventory
 ![Inventory](https://github.com/user-attachments/assets/52ab750a-4dbd-4757-a940-e06303bf3307)
 
+## 🎬 Demo Video
+
+Watch the full working demo here:
+
+[▶️ Click to Watch Demo](https://drive.google.com/file/d/1l2ApsnS2Hplz66YTdLRCqpDytXhh_r09/view?usp=drive_link)
+
 ---
 ## 👥 Team
 
