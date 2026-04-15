@@ -1,4 +1,4 @@
-# 🚀 Invexa – Smart Inventory Management System  
+<img width="1176" height="550" alt="WhatsApp Image 2026-04-15 at 21 16 54" src="https://github.com/user-attachments/assets/5b32fa8a-f3ad-4e75-a549-ee9506ca3276" /># 🚀 Invexa – Smart Inventory Management System  
 ### Smart Inventory
 
 ---
@@ -145,6 +145,15 @@ Runs on: http://localhost:5173
 ---
 
 
+## 📸 Screenshots
+
+### 📊 Dashboard
+![Dashboard](https://github.com/user-attachments/assets/2ae8e308-5893-4697-8779-18daf377eb5c)
+
+### 📦 Inventory
+![Inventory](https://github.com/user-attachments/assets/52ab750a-4dbd-4757-a940-e06303bf3307)
+
+---
 ## 👥 Team
 
 **Team Name:** Dhurandhar  
