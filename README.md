@@ -145,15 +145,6 @@ Runs on: http://localhost:5173
 ---
 
 
-## 🚀 Future Scope
-
-- AI-based demand forecasting  
-- Mobile application support  
-- Barcode and IoT integration  
-- ERP integrations  
-
----
-
 ## 👥 Team
 
 **Team Name:** Dhurandhar  
@@ -163,6 +154,6 @@ Runs on: http://localhost:5173
 
 ---
 
-## 💡 Final Note
+## 💡 Vision & Impact
 
 Invexa is designed as a **scalable and practical solution** that demonstrates how modern inventory systems can leverage real-time data, automation, and intelligent insights to improve business operations.
