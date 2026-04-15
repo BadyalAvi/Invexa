@@ -1,4 +1,4 @@
-<img width="1176" height="550" alt="WhatsApp Image 2026-04-15 at 21 16 54" src="https://github.com/user-attachments/assets/5b32fa8a-f3ad-4e75-a549-ee9506ca3276" /># 🚀 Invexa – Smart Inventory Management System  
+# 🚀 Invexa – Smart Inventory Management System  
 ### Smart Inventory
 
 ---
