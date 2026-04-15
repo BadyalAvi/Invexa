@@ -1,48 +1,165 @@
-# 🚀 Invexa – Smart Inventory Management System
-
-## 📌 Overview
-Invexa is a real-time, AI-powered inventory management system designed for SMEs to manage inventory, orders, and workflows efficiently.
+# 🚀 Invexa – Smart Inventory Management System  
+### Smart Inventory. Simplified.
 
 ---
 
-## ✨ Key Features
-- Inventory management
-- Order processing
-- Real-time stock updates
-- Dashboard insights
+## 🌟 Overview
+
+Invexa is a **real-time, AI-powered inventory management system** designed to streamline procurement, sales, and operational workflows for small and medium-sized businesses (SMEs).
+
+Traditional inventory systems rely on spreadsheets and disconnected tools, leading to inefficiencies, stock mismatches, and poor decision-making. Invexa eliminates these challenges by providing a **centralized platform** that ensures real-time stock visibility, workflow automation, and improved operational efficiency.
 
 ---
 
-## 🧠 Core Workflow Demonstration
-1. Add products  
-2. Create order  
-3. Dispatch order  
-4. Stock updates automatically  
+## 🎯 Problem vs Solution
+
+| Problem ❌ | Impact 🚨 | Invexa Solution ✅ |
+|----------|----------|------------------|
+| Manual tracking | High error rates | Automated inventory system |
+| Stock mismatch | Inventory loss | Real-time stock updates |
+| Disconnected tools | Data inconsistency | Unified platform |
+| Poor visibility | Overstock / stockouts | Smart dashboard insights |
+| No insights | Poor decisions | AI-powered analytics |
 
 ---
 
-## 🛠️ Tech Stack
-- React.js
-- Node.js
-- PostgreSQL
+## 🔄 Core Workflow
+
+```mermaid
+flowchart LR
+A[Add Product] --> B[Inventory Database]
+B --> C[Create Order]
+C --> D[Process Order]
+D --> E[Dispatch Order]
+E --> F[Stock Automatically Updated]
+F --> G[Dashboard Reflects Changes]
+```
+
+---
+
+## 📦 Features
+
+### 🔹 Inventory Management
+- Add, update, and manage products  
+- Real-time stock tracking  
+- Maintain accurate inventory levels  
+
+### 🔹 Order Processing
+- Create and manage sales orders  
+- Track order lifecycle from creation to dispatch  
+- Seamless integration with inventory  
+
+### 🔹 Real-Time Stock Updates
+- Automatic stock deduction upon dispatch  
+- Prevents inconsistencies and stock mismatch  
+- Ensures accurate inventory visibility  
+
+### 🔹 Dashboard & Insights
+- Real-time KPIs and metrics  
+- Overview of inventory and order status  
+- Enables quick decision-making  
+
+### 🔹 Intelligence Layer (Conceptual)
+- Analytics for performance tracking  
+- NLP-based command system  
+- AI assistant for smart recommendations  
+
+### 🔹 Reporting & Monitoring
+- Audit trails for system activity  
+- Stock movement tracking  
+- Exportable reports and alerts  
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+flowchart TB
+UI[Frontend - React.js] --> API[Backend - Node.js / Express]
+API --> DB[PostgreSQL Database]
+API --> Logic[Business Logic Layer]
+Logic --> Modules[Inventory | Orders | Analytics | Reports]
+```
+
+---
+
+## 🛠️ Technology Stack
+
+### Frontend
+- React.js (Component-based UI)
+- Tailwind CSS (Responsive design)
+
+### Backend
+- Node.js (Runtime environment)
+- Express.js (REST API framework)
+
+### Database
+- PostgreSQL (Relational database)
+
+### Security
+- JWT Authentication
+- Role-Based Access Control (RBAC)
 
 ---
 
 ## ⚙️ How to Run
 
-### Backend
-cd invexa-backend  
-npm install  
-npm run dev  
+### 🔹 Prerequisites
+- Node.js (v16+)  
+- PostgreSQL  
 
-### Frontend
-cd inventory-dashboard  
-npm install  
-npm run dev  
+---
+
+### 🔹 Backend Setup
+```
+cd invexa-backend
+npm install
+npm run dev
+```
+
+Runs on: http://localhost:5000  
+
+---
+
+### 🔹 Frontend Setup
+```
+cd inventory-dashboard
+npm install
+npm run dev
+```
+
+Runs on: http://localhost:5173  
+
+---
+
+## 🔑 Demo Credentials
+
+| Role  | Username  | Password     |
+|------|----------|-------------|
+| Admin | admin     | password123 |
+| Sales | sales_rep | test123     |
+
+---
+
+
+## 🚀 Future Scope
+
+- AI-based demand forecasting  
+- Mobile application support  
+- Barcode and IoT integration  
+- ERP integrations  
 
 ---
 
 ## 👥 Team
-Dhurandhar  
-Bhoomi Samnotra  
-Avichal Badyal
+
+**Team Name:** Dhurandhar  
+
+- Bhoomi Samnotra  
+- Avichal Badyal  
+
+---
+
+## 💡 Final Note
+
+Invexa is designed as a **scalable and practical solution** that demonstrates how modern inventory systems can leverage real-time data, automation, and intelligent insights to improve business operations.
