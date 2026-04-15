@@ -1,42 +1,48 @@
-🚀 Invexa – Smart Inventory Management System
+# 🚀 Invexa – Smart Inventory Management System
 
-📌 Overview
+## 📌 Overview
 Invexa is a real-time, AI-powered inventory management system designed for SMEs to manage inventory, orders, and workflows efficiently.
 
-✨ Key Features
+---
+
+## ✨ Key Features
 - Inventory management
 - Order processing
 - Real-time stock updates
 - Dashboard insights
 
+---
 
-
-🧠 Core Workflow Demonstration
+## 🧠 Core Workflow Demonstration
 1. Add products  
 2. Create order  
 3. Dispatch order  
 4. Stock updates automatically  
 
-🛠️ Tech Stack
+---
+
+## 🛠️ Tech Stack
 - React.js
 - Node.js
 - PostgreSQL
 
+---
 
-⚙️ How to Run
+## ⚙️ How to Run
 
-# Backend
+### Backend
 cd invexa-backend  
 npm install  
 npm run dev  
 
-# Frontend
+### Frontend
 cd inventory-dashboard  
 npm install  
 npm run dev  
 
+---
 
-# 👥 Team
-Dhurandhar   
+## 👥 Team
+Dhurandhar  
+Bhoomi Samnotra  
 Avichal Badyal
-Bhoomi Samnotra 
