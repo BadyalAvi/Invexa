@@ -5,9 +5,9 @@
 
 ## 🌟 Overview
 
-Invexa is a **real-time, AI-powered inventory management system** designed to streamline procurement, sales, and operational workflows for small and medium-sized businesses (SMEs).
+Invexa is a full-stack cloud-based Inventory Management System designed to streamline procurement, sales, manufacturing, and financial workflows for small and medium-sized businesses.
 
-Traditional inventory systems rely on spreadsheets and disconnected tools, leading to inefficiencies, stock mismatches, and poor decision-making. Invexa eliminates these challenges by providing a **centralized platform** that ensures real-time stock visibility, workflow automation, and improved operational efficiency.
+The system provides real-time inventory tracking, structured order workflows, and intelligent insights, enabling businesses to operate efficiently and reduce operational errors.
 
 ---
 
@@ -38,36 +38,69 @@ F --> G[Dashboard Reflects Changes]
 ---
 
 ## 📦 Features
+### 🏗️ Core Business Features
 
-### 🔹 Inventory Management
-- Add, update, and manage products  
-- Real-time stock tracking  
-- Maintain accurate inventory levels  
+### 📦 Inventory Management
+- Multi-warehouse stock tracking
+- Product variants (size, color)
+- Real-time stock updates 
 
-### 🔹 Order Processing
-- Create and manage sales orders  
-- Track order lifecycle from creation to dispatch  
-- Seamless integration with inventory  
+### 🛒 Order Processing
+- Sales & purchase orders 
+- Multi-product workflows  
+- Order lifecycle management  
 
-### 🔹 Real-Time Stock Updates
-- Automatic stock deduction upon dispatch  
-- Prevents inconsistencies and stock mismatch  
-- Ensures accurate inventory visibility  
+### 🏭 Manufacturing (WIP Tracking)
+- Bill of Materials (BOM)
+- Raw material consumption
+- Finished goods generation
 
-### 🔹 Dashboard & Insights
-- Real-time KPIs and metrics  
-- Overview of inventory and order status  
-- Enables quick decision-making  
+### 🔁 Returns & Backorders
+- Partial fulfillment tracking
+- Reverse logistics
 
-### 🔹 Intelligence Layer (Conceptual)
-- Analytics for performance tracking  
-- NLP-based command system  
-- AI assistant for smart recommendations  
+### 🏭 Warehouse Operations
+📦 Pick → Pack → Ship workflow
+🔄 Inter-warehouse stock transfers
+🧪 Quality control & damaged goods tracking
+📅 Expiry tracking (FEFO) 
 
-### 🔹 Reporting & Monitoring
-- Audit trails for system activity  
-- Stock movement tracking  
-- Exportable reports and alerts  
+### Financial Features
+📊 Customer & vendor ledger
+📄 GST invoice generation
+💳 Payment tracking 
+
+### 📊 Analytics & Reporting
+📈 Dashboard (KPIs, revenue, stock)
+📦 Stock movement reports
+📉 Profit & loss insights
+📊 Historical analytics
+
+### 🛡️ Security & Reliability
+🔐 JWT Authentication
+👥 Role-Based Access Control (RBAC)
+🧾 Audit Trail (full activity logs)
+
+### ⚡ Advanced Backend Features
+🔄 Atomic stock operations
+🧠 Transaction-safe workflows
+🔁 State-controlled order lifecycle
+🧩 Service-layer architecture
+
+### 🤖 Intelligence & Innovation
+- AI-based insights & forecasting
+- NLP command system
+- Computer vision inventory audit
+- Context-aware recommendations
+
+### 🧾 Compliance & Distributed Systems
+- GST calculation & invoice system
+- E-Way bill simulation
+- CRDT-based distributed sync
+
+### 📩 Notifications & Exports
+📧 Email alerts
+📄 PDF generation (reports & invoices)
 
 ---
 
@@ -91,10 +124,12 @@ Logic --> M4[Reporting Module]
 ### Frontend
 - React.js (Component-based UI)
 - Tailwind CSS (Responsive design)
+- Axios
 
 ### Backend
 - Node.js (Runtime environment)
 - Express.js (REST API framework)
+- Service Layer Architecture
 
 ### Database
 - PostgreSQL (Relational database)
@@ -117,6 +152,7 @@ Logic --> M4[Reporting Module]
 ```
 cd invexa-backend
 npm install
+npx prisma db push
 npm run dev
 ```
 
@@ -137,10 +173,15 @@ Runs on: http://localhost:5173
 
 ## 🔑 Demo Credentials
 
-| Role  | Username  | Password     |
-|------|----------|-------------|
-| Admin | admin     | password123 |
-| Sales | sales_rep | test123     |
+| Role          | Username   | Password     |
+|---------------|------------|--------------|
+| Admin         | admin      | password123  |
+| Sales         | sales_rep  | test123      |
+| Stock Manager | stock_mgr  | test123      |
+| Buyer         | buyer      | test123      |
+| Factory       | factory    | test123      |
+| Dispatch      | dispatch   | test123      |
+
 
 ---
 
