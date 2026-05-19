@@ -47,7 +47,6 @@ async function request(path, options = {}) {
     const body = await res.json().catch(() => ({}));
 
     if (body.code === "TOKEN_EXPIRED") {
-      // If already refreshing, queue this request
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           refreshQueue.push({ resolve, reject, path, options });
@@ -70,13 +69,11 @@ async function request(path, options = {}) {
         const { data } = await refreshRes.json();
         Auth.setTokens(data.accessToken, data.refreshToken);
 
-        // Retry all queued requests
         refreshQueue.forEach(({ resolve, reject, path: p, options: o }) => {
           request(p, o).then(resolve).catch(reject);
         });
         refreshQueue = [];
 
-        // Retry the original request with new token
         config.headers.Authorization = `Bearer ${data.accessToken}`;
         res = await fetch(`${BASE_URL}${path}`, config);
       } catch {
@@ -91,7 +88,6 @@ async function request(path, options = {}) {
     }
   }
 
-  // ── Parse response ─────────────────────────────────────────────────────────
   const data = await res.json().catch(() => ({ success: false, error: "Invalid server response." }));
 
   if (!res.ok) {
@@ -104,7 +100,6 @@ async function request(path, options = {}) {
   return data;
 }
 
-// Convenience methods
 const get    = (path, params)  => {
   const qs = params ? "?" + new URLSearchParams(params).toString() : "";
   return request(`${path}${qs}`);
@@ -123,21 +118,20 @@ export const authAPI = {
     Auth.setUser(data.data.user);
     return data.data;
   },
-
-  logout: async () => {
-    try {
-      await post("/auth/logout", { refreshToken: Auth.getRefreshToken() });
-    } finally {
-      Auth.clearTokens();
-    }
+  register: async ({ name, email, password, role, warehouse, company }) => {
+    const data = await post("/auth/register", { name, email, password, role, warehouse, company });
+    Auth.setTokens(data.data.accessToken, data.data.refreshToken);
+    Auth.setUser(data.data.user);
+    return data.data;
   },
-
-  me: () => get("/auth/me"),
-
-  changePassword: (currentPassword, newPassword) =>
-    put("/auth/change-password", { currentPassword, newPassword }),
-
-  // Get current user from localStorage (no network call)
+  logout: async () => {
+    try { await post("/auth/logout", { refreshToken: Auth.getRefreshToken() }); } 
+    finally { Auth.clearTokens(); }
+  },
+  forgotPassword: async (email) => post("/auth/forgot-password", { email }),
+  resetPassword: async (token, password) => post("/auth/reset-password", { token, password }),
+  me:             () => get("/auth/me"),
+  changePassword: (currentPassword, newPassword) => put("/auth/change-password", { currentPassword, newPassword }),
   currentUser: () => Auth.getUser(),
   isLoggedIn:  () => !!Auth.getToken(),
 };
@@ -147,20 +141,11 @@ export const authAPI = {
 // ══════════════════════════════════════════════════════════════════════════════
 export const productsAPI = {
   getAll: (filters = {}) => get("/products", filters),
-  // filters: { category, warehouse, status, search }
-
   getOne: (id) => get(`/products/${id}`),
-
   create: (data) => post("/products", data),
-  // data: { code, name, category, unit, cost, price, reorder_pt,
-  //         max_stock, warehouse, route, valuation, initial_stock }
-
   update: (id, data) => put(`/products/${id}`, data),
-
   archive: (id) => del(`/products/${id}`),
-
-  adjustStock: (id, physical_qty, reason, warehouse) =>
-    post(`/products/${id}/adjust`, { physical_qty, reason, warehouse }),
+  adjustStock: (id, physical_qty, reason, warehouse) => post(`/products/${id}/adjust`, { physical_qty, reason, warehouse }),
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -168,24 +153,11 @@ export const productsAPI = {
 // ══════════════════════════════════════════════════════════════════════════════
 export const ordersAPI = {
   getAll: (filters = {}) => get("/orders", filters),
-  // filters: { type, status, search }
-
   create: (data) => post("/orders", data),
-  // data: { type, customer, items:[{product_id, quantity, unit_price}],
-  //         priority, vendor_id, notes }
-
-  updateStatus: (id, status, extra = {}) =>
-    put(`/orders/${id}/status`, { status, ...extra }),
-  // extra: { carrier, tracking_no } for shipments
-
-  ship:    (id, carrier, tracking_no) =>
-    put(`/orders/${id}/status`, { status:"done", carrier, tracking_no }),
-
-  receive: (id) =>
-    put(`/orders/${id}/status`, { status:"done" }),
-
-  cancel:  (id) =>
-    put(`/orders/${id}/status`, { status:"cancel" }),
+  updateStatus: (id, status, extra = {}) => put(`/orders/${id}/status`, { status, ...extra }),
+  ship:    (id, carrier, tracking_no) => put(`/orders/${id}/status`, { status:"done", carrier, tracking_no }),
+  receive: (id) => put(`/orders/${id}/status`, { status:"done" }),
+  cancel:  (id) => put(`/orders/${id}/status`, { status:"cancel" }),
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -203,9 +175,7 @@ export const vendorsAPI = {
 // ══════════════════════════════════════════════════════════════════════════════
 export const transfersAPI = {
   getAll: () => get("/transfers"),
-
   create: (data) => post("/transfers", data),
-  // data: { product_id, from_wh, to_wh, quantity, high_value }
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -214,12 +184,8 @@ export const transfersAPI = {
 export const manufacturingAPI = {
   getWorkOrders: ()     => get("/manufacturing/work-orders"),
   getBOMs:       ()     => get("/manufacturing/bom"),
-
   createWorkOrder: (data) => post("/manufacturing/work-orders", data),
-  // data: { product_id, bom_id, quantity, worker, start_date, end_date }
-
-  updateProgress: (id, progress, efficiency, waste_pct) =>
-    put(`/manufacturing/work-orders/${id}/progress`, { progress, efficiency, waste_pct }),
+  updateProgress: (id, progress, efficiency, waste_pct) => put(`/manufacturing/work-orders/${id}/progress`, { progress, efficiency, waste_pct }),
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -227,9 +193,7 @@ export const manufacturingAPI = {
 // ══════════════════════════════════════════════════════════════════════════════
 export const qcAPI = {
   getAll: () => get("/qc"),
-
   inspect: (id, data) => post(`/qc/${id}/inspect`, data),
-  // data: { passed, failed, inspector, notes }
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -238,7 +202,6 @@ export const qcAPI = {
 export const scrapAPI = {
   getAll:   ()       => get("/scrap"),
   create:   (data)   => post("/scrap", data),
-  // data: { product_id, quantity, reason, unit_cost, disposed_by }
   writeOff: (id)     => put(`/scrap/${id}/writeoff`, {}),
 };
 
@@ -248,7 +211,6 @@ export const scrapAPI = {
 export const returnsAPI = {
   getAll:  ()       => get("/returns"),
   create:  (data)   => post("/returns", data),
-  // data: { type, order_ref, party, product_id, quantity, reason, refund }
   approve: (id)     => put(`/returns/${id}/approve`, {}),
   reject:  (id)     => put(`/returns/${id}/reject`,  {}),
 };
@@ -259,7 +221,6 @@ export const returnsAPI = {
 export const usersAPI = {
   getAll:  ()         => get("/users"),
   create:  (data)     => post("/users", data),
-  // data: { name, email, password, role, warehouse }
   update:  (id, data) => put(`/users/${id}`, data),
   remove:  (id)       => del(`/users/${id}`),
 };
@@ -269,18 +230,13 @@ export const usersAPI = {
 // ══════════════════════════════════════════════════════════════════════════════
 export const reportsAPI = {
   getMovements: (filters = {}) => get("/movements", filters),
-  // filters: { product_id, type, warehouse }
-
   getAuditLog:  (filters = {}) => get("/audit", filters),
-  // filters: { module, action, user_id }
-
   getDashboard: () => get("/dashboard"),
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
 // GLOBAL ERROR HANDLER FOR UI
 // ══════════════════════════════════════════════════════════════════════════════
-// Wrap any API call with this to get a clean error message for toasts/banners
 export async function apiCall(fn, onSuccess, onError) {
   try {
     const result = await fn();
@@ -293,14 +249,60 @@ export async function apiCall(fn, onSuccess, onError) {
   }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// HEALTH CHECK
-// ══════════════════════════════════════════════════════════════════════════════
 export const healthAPI = {
   check: () => get("/health"),
 };
 
-// Default export with everything
+export const putawayAPI = {
+  getAll:       ()         => get("/putaway"),
+  create:       (data)     => post("/putaway", data),
+  toggle:       (id)       => put(`/putaway/${id}/toggle`, {}),
+  remove:       (id)       => del(`/putaway/${id}`),
+};
+
+// ── Fulfillments (Pick → Pack → Ship) ────────────────────────────────────────
+export const fulfillmentsAPI = {
+  // 🔥 ADDED INTERCEPTOR: Let's see exactly what the backend sends us!
+  getAll: async () => {
+    const res = await get("/fulfillments");
+    console.log("📦 Live DB Fulfillments payload:", res);
+    return res;
+  },
+  create:       (data)                       => post("/fulfillments", data),
+  advanceStep:  (id, step, carrier, tracking)=> put(`/fulfillments/${id}/step`, { step, carrier, tracking_no:tracking }),
+};
+
+export const backordersAPI = {
+  getAll:   ()       => get("/backorders"),
+  create:   (data)   => post("/backorders", data),
+  fulfill:  (id)     => put(`/backorders/${id}/fulfill`, {}),
+};
+
+export const variantsAPI = {
+  getAll:       ()             => get("/variants"),
+  create:       (data)         => post("/variants", data),
+  adjustStock:  (id, delta)    => put(`/variants/${id}/stock`, { delta }),
+  remove:       (id)           => del(`/variants/${id}`),
+};
+
+export const priceListsAPI = {
+  getAll:   ()         => get("/price-lists"),
+  create:   (data)     => post("/price-lists", data),
+  update:   (id, data) => put(`/price-lists/${id}`, data),
+  remove:   (id)       => del(`/price-lists/${id}`),
+};
+
+export const dropshipsAPI = {
+  getAll:   ()     => get("/dropships"),
+  create:   (data) => post("/dropships", data),
+  advance:  (id)   => put(`/dropships/${id}/advance`, {}),
+  cancel:   (id)   => put(`/dropships/${id}/cancel`, {}),
+};
+
+export const batchesAPI = {
+  getAll: () => get("/batches"),
+};
+
 export default {
   auth:          authAPI,
   products:      productsAPI,
@@ -314,5 +316,12 @@ export default {
   users:         usersAPI,
   reports:       reportsAPI,
   health:        healthAPI,
+  putaway:       putawayAPI,
+  fulfillments:  fulfillmentsAPI,
+  backorders:    backordersAPI,
+  variants:      variantsAPI,
+  priceLists:    priceListsAPI,
+  dropships:     dropshipsAPI,
+  batches:       batchesAPI,
   call:          apiCall,
 };

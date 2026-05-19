@@ -10,8 +10,9 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, LineChart, Line,
 } from "recharts";
-import { T, MONO, SANS, SC, PRI, WAREHOUSES, fmtINR, fmtK, uid, today, initBOMs, initWorkOrders, initVendors, initUsers, blockchainLog } from "./data.js";
+import { T, MONO, SANS, SC, PRI, WAREHOUSES, fmtINR, fmtK, uid, today, initBOMs, initWorkOrders, initUsers, blockchainLog } from "./data.js";
 import { Badge, PriBadge, KPI, PageTitle, Btn, TH, TD, SectionCard, Modal, Field, Input, Select, FormGrid, AlertBanner } from "./ui.jsx";
+import html2pdf from "html2pdf.js";
 
 // ─── computeStatus: recalculate low/critical after stock changes ───────────────
 export function computeStatus(p) {
@@ -21,13 +22,15 @@ export function computeStatus(p) {
 }
 
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
-export function Inventory({ products, setProducts }) {
+export function Inventory({ products, setProducts, onAdd, onDelete, onUpdate }) {
   const [search, setSearch]   = useState("");
   const [cat, setCat]         = useState("All");
   const [wh, setWh]           = useState("All");
   const [sel, setSel]         = useState([]);
   const [addOpen, setAddOpen] = useState(false);
   const [detailP, setDetailP] = useState(null);
+  const [apiErr,  setApiErr]  = useState("");
+  const [saving,  setSaving]  = useState(false);
   const [np, setNp] = useState({
     code:"", name:"", category:"Furniture", onHand:0, cost:0,
     price:0, reorder:5, max:20, unit:"pcs",
@@ -46,20 +49,40 @@ export function Inventory({ products, setProducts }) {
   const totalCost   = products.reduce((a, p) => a + p.onHand * p.cost, 0);
   const totalRetail = products.reduce((a, p) => a + p.onHand * p.price, 0);
 
-  const addProduct = () => {
+  const addProduct = async () => {
     if (!np.code || !np.name) return;
-    const reserved  = 0;
-    const available = np.onHand;
-    const status    = computeStatus({ onHand:np.onHand, reorder:np.reorder });
-    setProducts(prev => [...prev, {
-      ...np, id:Date.now(), reserved, available, status,
-      batches:[{ id:`B${uid()}`, qty:np.onHand, exp:"Dec 2027", serial:null }],
-    }]);
+    setApiErr(""); setSaving(true);
+    const payload = {
+      code:np.code, name:np.name, category:np.category,
+      unit:np.unit, cost:np.cost, price:np.price,
+      reorder_pt:np.reorder, max_stock:np.max,
+      warehouse:np.warehouse, route:np.route, valuation:np.valuation,
+      initial_stock:np.onHand,
+    };
+    if (onAdd) {
+      const result = await onAdd(payload);
+      if (!result.ok) { setApiErr(result.error || "Failed to add product."); setSaving(false); return; }
+    } else {
+      // fallback local
+      setProducts(prev => [...prev, {
+        ...np, id:Date.now(), reserved:0, available:np.onHand,
+        status:computeStatus({onHand:np.onHand,reorder:np.reorder}),
+        batches:[],
+      }]);
+    }
+    setSaving(false);
     setAddOpen(false);
     setNp({ code:"", name:"", category:"Furniture", onHand:0, cost:0, price:0, reorder:5, max:20, unit:"pcs", warehouse:"WH/Main", route:"Buy", valuation:"FIFO" });
   };
 
-  const deleteProduct = id => setProducts(prev => prev.filter(p => p.id !== id));
+  const deleteProduct = async (id) => {
+    if (onDelete) {
+      const result = await onDelete(id);
+      if (!result.ok) { setApiErr(result.error || "Failed to delete."); }
+    } else {
+      setProducts(prev => prev.filter(p => p.id !== id));
+    }
+  };
   const toggleSel = id => setSel(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
   return (
@@ -72,6 +95,11 @@ export function Inventory({ products, setProducts }) {
           <Btn Icon={Plus} variant="primary" onClick={() => setAddOpen(true)}>Add Product</Btn>
         </>}
       />
+      {apiErr && (
+        <div style={{ background:'#FCECEA', border:'1px solid #F0A8A1', borderRadius:6, padding:'10px 14px', marginBottom:14, fontSize:13, color:'#C0392B', fontFamily:"'Outfit','Trebuchet MS',sans-serif" }}>
+          ⚠ {apiErr}
+        </div>
+      )}
 
       <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:12, marginBottom:18 }}>
         <KPI label="Total SKUs"    value={products.length}                                   sub="products"         Icon={Package}       />
@@ -176,7 +204,7 @@ export function Inventory({ products, setProducts }) {
           </div>
           <div style={{ display:"flex", gap:7, marginTop:12, justifyContent:"flex-end" }}>
             <Btn onClick={() => setAddOpen(false)}>Cancel</Btn>
-            <Btn variant="primary" Icon={Plus} onClick={addProduct} disabled={!np.code||!np.name}>Save Product</Btn>
+            <Btn variant="primary" Icon={Plus} onClick={addProduct} disabled={!np.code||!np.name||saving}>{saving?"Saving…":"Save Product"}</Btn>
           </div>
         </div>
       )}
@@ -293,7 +321,7 @@ export function Inventory({ products, setProducts }) {
 }
 
 // ─── ORDERS ───────────────────────────────────────────────────────────────────
-export function Orders({ orders, setOrders, products, setProducts }) {
+export function Orders({ orders, setOrders, products, setProducts, onCreateOrder, onChangeStatus }) {
   const [tab, setTab]         = useState("all");
   const [search, setSearch]   = useState("");
   const [addOpen, setAddOpen] = useState(false);
@@ -305,66 +333,66 @@ export function Orders({ orders, setOrders, products, setProducts }) {
     .filter(o => tab==="all" || o.type===(tab==="sales"?"sale":"purchase"))
     .filter(o => o.customer.toLowerCase().includes(search.toLowerCase()) || o.id.toLowerCase().includes(search.toLowerCase()));
 
-  const addOrder = () => {
+  const [saving, setSaving] = useState(false);
+
+  // 🚀 THE PDF GENERATOR ENGINE
+  const downloadInvoicePDF = () => {
+    const element = document.getElementById("invoice-capture-area");
+    const opt = {
+      margin:       [10, 10, 10, 10],
+      filename:     `${invModal.invoice}.pdf`,
+      image:        { type: 'jpeg', quality: 0.98 },
+      html2canvas:  { scale: 2, useCORS: true },
+      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    };
+    html2pdf().set(opt).from(element).save();
+  };
+
+  const addOrder = async () => {
     setErr("");
     const prod = products.find(p => p.code === no.productCode);
     if (!prod) { setErr("Product SKU not found. Check the code."); return; }
-    if (no.type === "sale" && prod.available < no.qty) {
-      setErr(`Not enough stock. Available: ${prod.available} ${prod.unit}`); return;
+    
+    setSaving(true);
+    if (onCreateOrder) {
+      const result = await onCreateOrder({ ...no, productCode:no.productCode });
+      setSaving(false);
+      if (!result.ok) { setErr(result.error || "Failed to create order."); return; }
+    } else {
+      // offline fallback
+      const total = no.type === "sale" ? prod.price * no.qty : prod.cost * no.qty;
+      const pfx   = no.type === "sale" ? "SO" : "PO";
+      const newId = `${pfx}-${String(orders.filter(o=>o.type===no.type).length+1043).padStart(4,"0")}`;
+      setOrders(prev => [...prev, {
+        ...no, id:newId, product:prod.name, total,
+        date:today(), invoice:`INV-${uid()}`, payment:"pending", delivery:`DLV-${uid()}`,
+      }]);
+      setSaving(false);
     }
-    const total = no.type === "sale" ? prod.price * no.qty : prod.cost * no.qty;
-    const pfx   = no.type === "sale" ? "SO" : "PO";
-    const newId = `${pfx}-${String(orders.filter(o=>o.type===no.type).length+1043).padStart(4,"0")}`;
-
-    // For sales: reserve stock immediately
-    if (no.type === "sale") {
-      setProducts(prev => prev.map(p => {
-        if (p.code !== no.productCode) return p;
-        const newReserved  = p.reserved + no.qty;
-        const newAvailable = p.onHand - newReserved;
-        return { ...p, reserved:newReserved, available:Math.max(0,newAvailable), status:computeStatus({...p, onHand:p.onHand}) };
-      }));
-    }
-
-    setOrders(prev => [...prev, {
-      ...no, id:newId, product:prod.name, total,
-      date:today(), invoice:`INV-${uid()}`, payment:"pending", delivery:`DLV-${uid()}`,
-    }]);
     setAddOpen(false);
     setNo({ type:"sale", customer:"", productCode:"", qty:1, status:"pending", priority:"normal" });
   };
 
-  // Mark sale as done → reduce actual stock. Mark purchase as done → add stock.
-  const changeStatus = (orderId, newStatus) => {
-    const order = orders.find(o => o.id === orderId);
-    if (!order) return;
-    const prod = products.find(p => p.name === order.product);
-
-    setOrders(prev => prev.map(o => o.id===orderId ? {...o, status:newStatus, payment:newStatus==="done"?"paid":o.payment} : o));
-
-    if (prod) {
-      setProducts(prev => prev.map(p => {
-        if (p.name !== order.product) return p;
-        let updated = { ...p };
-        if (order.type === "sale" && newStatus === "done") {
-          // Deduct from onHand, release reservation
-          updated.onHand    = Math.max(0, p.onHand - order.qty);
-          updated.reserved  = Math.max(0, p.reserved - order.qty);
-          updated.available = Math.max(0, updated.onHand - updated.reserved);
-        }
-        if (order.type === "sale" && newStatus === "cancel") {
-          // Release reservation
-          updated.reserved  = Math.max(0, p.reserved - order.qty);
-          updated.available = Math.max(0, p.onHand - updated.reserved);
-        }
-        if (order.type === "purchase" && newStatus === "done") {
-          // Add received stock
-          updated.onHand    = p.onHand + order.qty;
-          updated.available = updated.onHand - p.reserved;
-        }
-        updated.status = computeStatus(updated);
-        return updated;
-      }));
+  const changeStatus = async (orderId, newStatus) => {
+    if (onChangeStatus) {
+      await onChangeStatus(orderId, newStatus);
+    } else {
+      // offline fallback
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const prod = products.find(p => p.name === order.product);
+      setOrders(prev => prev.map(o => o.id===orderId ? {...o, status:newStatus, payment:newStatus==="done"?"paid":o.payment} : o));
+      if (prod) {
+        setProducts(prev => prev.map(p => {
+          if (p.name !== order.product) return p;
+          let u = { ...p };
+          if (order.type==="sale" && newStatus==="done") { u.onHand=Math.max(0,p.onHand-order.qty); u.reserved=Math.max(0,p.reserved-order.qty); u.available=Math.max(0,u.onHand-u.reserved); }
+          if (order.type==="sale" && newStatus==="cancel") { u.reserved=Math.max(0,p.reserved-order.qty); u.available=Math.max(0,p.onHand-u.reserved); }
+          if (order.type==="purchase" && newStatus==="done") { u.onHand=p.onHand+order.qty; u.available=u.onHand-p.reserved; }
+          u.status = computeStatus(u);
+          return u;
+        }));
+      }
     }
   };
 
@@ -472,11 +500,11 @@ export function Orders({ orders, setOrders, products, setProducts }) {
             </div>
           </div>
           <div style={{ marginTop:8, fontSize:11, color:T.t3, fontFamily:SANS }}>
-            💡 For sales: stock is reserved immediately. For purchases: stock is added when marked Done.
+            💡 For sales: stock is reserved immediately. Out-of-stock items will auto-generate a backorder.
           </div>
           <div style={{ display:"flex", gap:7, marginTop:12, justifyContent:"flex-end" }}>
             <Btn onClick={() => { setAddOpen(false); setErr(""); }}>Cancel</Btn>
-            <Btn variant="primary" Icon={Plus} onClick={addOrder}>Create Order</Btn>
+            <Btn variant="primary" Icon={Plus} onClick={addOrder} disabled={saving}>{saving?"Saving…":"Create Order"}</Btn>
           </div>
         </div>
       )}
@@ -543,47 +571,70 @@ export function Orders({ orders, setOrders, products, setProducts }) {
 
       {/* Invoice Modal */}
       {invModal && (
-        <Modal title={`Invoice — ${invModal.invoice}`} onClose={() => setInvModal(null)} width={500}>
-          <div style={{ background:T.pageBg, borderRadius:6, padding:16 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:16 }}>
+        <Modal title={`Invoice Details`} onClose={() => setInvModal(null)} width={550}>
+          {/* This wrapper is what the PDF engine captures */}
+          <div id="invoice-capture-area" style={{ background:"#ffffff", borderRadius:6, padding:24, border:`1px solid ${T.bdr}` }}>
+            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:24 }}>
               <div>
-                <div style={{ fontSize:20, fontWeight:800, color:T.teal, fontFamily:SANS }}>InvenPro</div>
-                <div style={{ fontSize:11, color:T.t3, fontFamily:SANS }}>admin@invenpro.in</div>
+                <div style={{ fontSize:24, fontWeight:900, color:T.teal, fontFamily:SANS, letterSpacing:"-0.5px" }}>InvenPro</div>
+                <div style={{ fontSize:12, color:T.t3, fontFamily:SANS, marginTop:4 }}>123 Enterprise Way<br/>Tech District<br/>admin@invenpro.in</div>
               </div>
               <div style={{ textAlign:"right" }}>
-                <div style={{ fontSize:13, fontWeight:700, color:T.t1, fontFamily:MONO }}>{invModal.invoice}</div>
-                <div style={{ fontSize:11, color:T.t3, fontFamily:SANS }}>Date: {invModal.date}</div>
-                <Badge status={invModal.payment==="paid"?"done":"pending"}/>
+                <div style={{ fontSize:16, fontWeight:800, color:T.t1, fontFamily:MONO }}>INVOICE</div>
+                <div style={{ fontSize:14, fontWeight:600, color:T.t2, fontFamily:MONO, marginTop:2 }}>{invModal.invoice}</div>
+                <div style={{ fontSize:11, color:T.t3, fontFamily:SANS, marginTop:4 }}>Date: {invModal.date}</div>
               </div>
             </div>
-            <div style={{ borderTop:`1px solid ${T.bdr}`, paddingTop:12, marginBottom:12 }}>
-              <div style={{ fontSize:11, color:T.t4, fontFamily:SANS, marginBottom:4 }}>BILL TO</div>
-              <div style={{ fontSize:14, fontWeight:600, color:T.t1, fontFamily:SANS }}>{invModal.customer}</div>
+            
+            <div style={{ borderTop:`2px solid ${T.tealL}`, borderBottom:`1px solid ${T.bdr}`, padding:"12px 0", marginBottom:20, display:"flex", justifyContent:"space-between" }}>
+              <div>
+                <div style={{ fontSize:10, color:T.t4, fontFamily:SANS, fontWeight:700, letterSpacing:"0.05em", marginBottom:4 }}>BILL TO</div>
+                <div style={{ fontSize:15, fontWeight:700, color:T.t1, fontFamily:SANS }}>{invModal.customer}</div>
+                <div style={{ fontSize:11, color:T.t3, fontFamily:SANS, marginTop:2 }}>Ref: {invModal.id}</div>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                 <div style={{ fontSize:10, color:T.t4, fontFamily:SANS, fontWeight:700, letterSpacing:"0.05em", marginBottom:4 }}>STATUS</div>
+                 <div style={{ fontSize:13, fontWeight:700, color:invModal.payment==="paid"?T.green:T.amber, fontFamily:SANS }}>{invModal.payment==="paid"?"PAID":"PENDING"}</div>
+              </div>
             </div>
-            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-              <thead><tr style={{ background:T.surfAlt, borderBottom:`1px solid ${T.bdr}` }}>
-                {["Description","Qty","Unit Price","Total"].map(h => (
-                  <th key={h} style={{ padding:"6px 10px", textAlign:"left", fontFamily:SANS, fontSize:10.5, color:T.t4, fontWeight:600, textTransform:"uppercase" }}>{h}</th>
+
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+              <thead><tr style={{ background:"#F8F9FA", borderBottom:`1px solid ${T.bdr}` }}>
+                {["Description","Qty","Unit Price","Total"].map((h, i) => (
+                  <th key={h} style={{ padding:"10px 12px", textAlign:i===0?"left":"right", fontFamily:SANS, fontSize:11, color:T.t4, fontWeight:700, textTransform:"uppercase" }}>{h}</th>
                 ))}
               </tr></thead>
               <tbody>
                 <tr>
-                  <td style={{ padding:"8px 10px", fontFamily:SANS, color:T.t1 }}>{invModal.product}</td>
-                  <td style={{ padding:"8px 10px", fontFamily:MONO }}>{invModal.qty}</td>
-                  <td style={{ padding:"8px 10px", fontFamily:MONO }}>{fmtINR(invModal.total/invModal.qty)}</td>
-                  <td style={{ padding:"8px 10px", fontFamily:MONO, fontWeight:700 }}>{fmtINR(invModal.total)}</td>
+                  <td style={{ padding:"12px 12px", fontFamily:SANS, color:T.t1, fontWeight:500 }}>{invModal.product}</td>
+                  <td style={{ padding:"12px 12px", fontFamily:MONO, textAlign:"right" }}>{invModal.qty}</td>
+                  <td style={{ padding:"12px 12px", fontFamily:MONO, textAlign:"right" }}>{fmtINR(invModal.total/invModal.qty)}</td>
+                  <td style={{ padding:"12px 12px", fontFamily:MONO, fontWeight:700, textAlign:"right" }}>{fmtINR(invModal.total)}</td>
                 </tr>
               </tbody>
             </table>
-            <div style={{ display:"flex", justifyContent:"flex-end", marginTop:12 }}>
-              <div style={{ background:T.teal, color:"#fff", borderRadius:5, padding:"10px 16px", textAlign:"right" }}>
-                <div style={{ fontSize:11, fontFamily:SANS, opacity:0.8 }}>Total Amount</div>
-                <div style={{ fontSize:20, fontWeight:800, fontFamily:MONO }}>{fmtINR(invModal.total)}</div>
+            
+            <div style={{ display:"flex", justifyContent:"flex-end", marginTop:24 }}>
+              <div style={{ width:"50%" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:`1px solid ${T.bdr2}`, fontSize:12, color:T.t2 }}>
+                  <span>Subtotal</span><span style={{ fontFamily:MONO }}>{fmtINR(invModal.total)}</span>
+                </div>
+                <div style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:`1px solid ${T.bdr2}`, fontSize:12, color:T.t2 }}>
+                  <span>Tax (0%)</span><span style={{ fontFamily:MONO }}>₹0</span>
+                </div>
+                <div style={{ display:"flex", justifyContent:"space-between", padding:"10px 0", fontSize:16, fontWeight:800, color:T.t1 }}>
+                  <span>Total</span><span style={{ fontFamily:MONO }}>{fmtINR(invModal.total)}</span>
+                </div>
               </div>
             </div>
+            
+            <div style={{ marginTop:40, paddingTop:16, borderTop:`1px solid ${T.bdr2}`, textAlign:"center", fontSize:10, color:T.t4, fontFamily:SANS }}>
+              Thank you for your business. For any inquiries regarding this invoice, please contact support.
+            </div>
           </div>
-          <div style={{ display:"flex", gap:7, justifyContent:"flex-end", marginTop:12 }}>
-            <Btn Icon={Download}>Download PDF</Btn>
+
+          <div style={{ display:"flex", gap:7, justifyContent:"flex-end", marginTop:16 }}>
+            <Btn Icon={Download} onClick={downloadInvoicePDF}>Download PDF</Btn>
             <Btn Icon={Send} variant="primary">Send to Customer</Btn>
           </div>
         </Modal>
@@ -593,63 +644,59 @@ export function Orders({ orders, setOrders, products, setProducts }) {
 }
 
 // ─── MANUFACTURING ─────────────────────────────────────────────────────────────
+import { useHighPriority } from "./hooks/useHighPriority.js";
+
 export function Manufacturing({ products, setProducts }) {
-  const [boms, setBoms]       = useState(initBOMs);
-  const [workOrders, setWOs]  = useState(initWorkOrders);
+  const {
+    workOrders, setWorkOrders,
+    boms,
+    createWorkOrder, updateWOProgress,
+    mfgOnline,
+  } = useHighPriority();
+
   const [addWOOpen, setAddWO] = useState(false);
   const [nwo, setNwo]         = useState({ product:"", code:"", qty:1, worker:"", start:today(), end:"" });
   const [err, setErr]         = useState("");
 
-  const startWO = () => {
+  const startWO = async () => {
     setErr("");
-    const bom = boms.find(b => b.code === nwo.code);
-    if (!bom) { setErr("No BOM found for this SKU. Create a BOM first."); return; }
+    
+    // Send the raw data straight to the hook. 
+    // The hook and backend now do the "Smart Lookup" automatically!
+    const result = await createWorkOrder({
+      product:    nwo.product,
+      code:       nwo.code,
+      qty:        nwo.qty,
+      worker:     nwo.worker,
+      start:      nwo.start,
+      end:        nwo.end
+    });
 
-    // Check raw material availability
-    const missing = bom.materials.filter(m => m.onHand < m.qty * nwo.qty);
-    if (missing.length > 0) {
-      setErr(`Insufficient materials: ${missing.map(m=>`${m.name} (need ${m.qty*nwo.qty}, have ${m.onHand})`).join(", ")}`);
-      return;
-    }
-
-    // Deduct raw materials from BOM
-    setBoms(prev => prev.map(b => b.code !== nwo.code ? b : {
-      ...b, materials: b.materials.map(m => ({ ...m, onHand: m.onHand - m.qty * nwo.qty }))
-    }));
-
-    setWOs(prev => [...prev, {
-      ...nwo, id:`WO-${String(prev.length+1).padStart(3,"0")}`,
-      status:"planned", progress:0, efficiency:0, waste:0,
-    }]);
+    if (!result.ok) { setErr(result.error || "Failed to create work order."); return; }
+    
     setAddWO(false);
     setNwo({ product:"", code:"", qty:1, worker:"", start:today(), end:"" });
   };
 
-  const completeWO = (woId) => {
+  const updateProgress = async (woId, progress) => {
     const wo = workOrders.find(w => w.id === woId);
     if (!wo) return;
-    // Add finished goods to inventory
-    setProducts(prev => prev.map(p => {
-      if (p.code !== wo.code) return p;
-      const newOnHand = p.onHand + wo.qty;
-      return { ...p, onHand:newOnHand, available:newOnHand-p.reserved, status:computeStatus({...p,onHand:newOnHand}) };
-    }));
-    setWOs(prev => prev.map(w => w.id===woId ? {...w, status:"done", progress:100, efficiency:91} : w));
-  };
-
-  const updateProgress = (woId, progress) => {
-    setWOs(prev => prev.map(w => w.id===woId ? {
-      ...w, progress:Number(progress),
-      status: Number(progress)>=100?"done":"in_progress",
-    } : w));
-    if (Number(progress) >= 100) completeWO(woId);
+    const result = await updateWOProgress(woId, wo._uuid, progress);
+    // On completion add finished goods to local product state
+    if (Number(progress) >= 100 && wo.status !== "done") {
+      setProducts(prev => prev.map(p => {
+        if (p.code !== wo.code && p.name !== wo.product) return p;
+        const newOnHand = p.onHand + wo.qty;
+        return { ...p, onHand:newOnHand, available:newOnHand-p.reserved, status:computeStatus({...p,onHand:newOnHand}) };
+      }));
+    }
   };
 
   return (
     <div>
       <PageTitle
         title="Manufacturing"
-        sub="Work orders · Bill of materials · Progress tracking · Efficiency"
+        sub={`Work orders · Bill of materials · Progress tracking · Efficiency${mfgOnline?" · 🟢 Live":" · 🟡 Offline"}`}
         actions={<Btn Icon={Plus} variant="primary" onClick={() => setAddWO(true)}>New Work Order</Btn>}
       />
 
@@ -720,7 +767,7 @@ export function Manufacturing({ products, setProducts }) {
                 <TD><Badge status={w.status}/></TD>
                 <TD>
                   {w.status==="planned" && (
-                    <button onClick={() => setWOs(prev=>prev.map(x=>x.id===w.id?{...x,status:"in_progress"}:x))}
+                    <button onClick={() => setWorkOrders(prev=>prev.map(x=>x.id===w.id?{...x,status:"in_progress"}:x))}
                       style={{ fontSize:11, padding:"3px 9px", background:T.blue, border:"none", borderRadius:3, color:"#fff", cursor:"pointer", fontFamily:SANS, fontWeight:500 }}>
                       Start
                     </button>
@@ -738,8 +785,8 @@ export function Manufacturing({ products, setProducts }) {
           <div key={bom.id} style={{ background:T.surfBg, border:`1px solid ${T.bdr}`, borderRadius:6 }}>
             <div style={{ padding:"11px 14px", borderBottom:`1px solid ${T.bdr}`, display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
               <div>
-                <div style={{ fontWeight:700, fontSize:13, color:T.t1, fontFamily:SANS }}>{bom.product}</div>
-                <div style={{ fontSize:11, color:T.t3, fontFamily:MONO, marginTop:2 }}>[{bom.code}] · {bom.qty} pcs · {fmtINR(bom.cost)} · Waste: {bom.waste}%</div>
+                <div style={{ fontWeight:700, fontSize:13, color:T.t1, fontFamily:SANS }}>{bom.product_name || bom.product}</div>
+                <div style={{ fontSize:11, color:T.t3, fontFamily:MONO, marginTop:2 }}>[{bom.code || "—"}] · {bom.quantity || bom.qty} pcs · {fmtINR(bom.cost)} · Waste: {bom.waste_pct || bom.waste}%</div>
               </div>
               <Badge status={bom.status}/>
             </div>
@@ -750,14 +797,14 @@ export function Manufacturing({ products, setProducts }) {
                 ))}
               </tr></thead>
               <tbody>
-                {bom.materials.map((m,i) => (
+                {(bom.materials || []).map((m,i) => (
                   <tr key={i} style={{ borderBottom:`1px solid ${T.bdr2}` }}>
                     <td style={{ padding:"7px 10px", fontWeight:500, color:T.t1, fontFamily:SANS, fontSize:12 }}>{m.name}</td>
-                    <td style={{ padding:"7px 10px", fontFamily:MONO, fontSize:12 }}>{m.qty}</td>
+                    <td style={{ padding:"7px 10px", fontFamily:MONO, fontSize:12 }}>{m.quantity || m.qty}</td>
                     <td style={{ padding:"7px 10px", color:T.t3, fontFamily:SANS, fontSize:12 }}>{m.unit}</td>
-                    <td style={{ padding:"7px 10px", fontFamily:MONO, fontWeight:600, color:T.teal, fontSize:12 }}>{fmtINR(m.cost)}</td>
+                    <td style={{ padding:"7px 10px", fontFamily:MONO, fontWeight:600, color:T.teal, fontSize:12 }}>{fmtINR(m.unit_cost || m.cost)}</td>
                     <td style={{ padding:"7px 10px", fontSize:12 }}>
-                      <span style={{ fontFamily:MONO, fontWeight:700, color:m.onHand>=m.qty?T.green:T.red }}>{m.onHand}</span>
+                      <span style={{ fontFamily:MONO, fontWeight:700, color:(m.on_hand||m.onHand)>=(m.quantity||m.qty)?T.green:T.red }}>{m.on_hand || m.onHand}</span>
                     </td>
                   </tr>
                 ))}
@@ -771,54 +818,40 @@ export function Manufacturing({ products, setProducts }) {
 }
 
 // ─── TRANSFERS ─────────────────────────────────────────────────────────────────
-export function Transfers({ transfers, setTransfers, products, setProducts }) {
+export function Transfers({ transfers, setTransfers, products, setProducts, onCreateTransfer }) {
   const [addOpen, setAddOpen] = useState(false);
   const [err, setErr]         = useState("");
   const [nt, setNt] = useState({ from:"WH/Main", to:"WH/North", productCode:"", qty:1, highValue:false });
 
   const mintNFT = () => `0x${Array.from({length:8},()=>Math.floor(Math.random()*16).toString(16)).join("")}...${Array.from({length:4},()=>Math.floor(Math.random()*16).toString(16)).join("")}`;
 
-  const createTransfer = () => {
+  const createTransfer = async () => {
     setErr("");
     if (nt.from === nt.to) { setErr("Source and destination warehouse cannot be the same."); return; }
-    const prod = products.find(p => p.code === nt.productCode && p.warehouse === nt.from);
-    if (!prod) { setErr(`Product ${nt.productCode} not found in ${nt.from}`); return; }
-    if (prod.available < nt.qty) { setErr(`Only ${prod.available} units available in ${nt.from}`); return; }
-
-    // Move stock: reduce from source, add to destination
-    setProducts(prev => {
-      const updated = [...prev];
-      // Deduct from source
-      const srcIdx = updated.findIndex(p => p.code===nt.productCode && p.warehouse===nt.from);
-      if (srcIdx >= 0) {
-        updated[srcIdx] = {
-          ...updated[srcIdx],
-          onHand:    updated[srcIdx].onHand - nt.qty,
-          available: updated[srcIdx].available - nt.qty,
-          status:    computeStatus({ ...updated[srcIdx], onHand: updated[srcIdx].onHand - nt.qty }),
-        };
-      }
-      // Check if dest warehouse entry exists
-      const dstIdx = updated.findIndex(p => p.code===nt.productCode && p.warehouse===nt.to);
-      if (dstIdx >= 0) {
-        updated[dstIdx] = {
-          ...updated[dstIdx],
-          onHand:    updated[dstIdx].onHand + nt.qty,
-          available: updated[dstIdx].available + nt.qty,
-          status:    computeStatus({ ...updated[dstIdx], onHand: updated[dstIdx].onHand + nt.qty }),
-        };
-      } else {
-        // Create new entry in destination warehouse
-        updated.push({ ...prod, id:Date.now(), warehouse:nt.to, onHand:nt.qty, reserved:0, available:nt.qty, status:computeStatus({...prod,onHand:nt.qty}) });
-      }
-      return updated;
-    });
-
-    const nft = nt.highValue ? mintNFT() : null;
-    setTransfers(prev => [...prev, {
-      ...nt, id:`TRF-${String(prev.length+1).padStart(3,"0")}`,
-      product:prod.name, status:"done", date:today(), nft, verified:!!nft,
-    }]);
+    if (!nt.productCode) { setErr("Enter a product SKU."); return; }
+    if (nt.qty < 1) { setErr("Quantity must be at least 1."); return; }
+    if (onCreateTransfer) {
+      const result = await onCreateTransfer({ ...nt });
+      if (!result.ok) { setErr(result.error || "Transfer failed."); return; }
+    } else {
+      const prod = products.find(p => p.code === nt.productCode && p.warehouse === nt.from);
+      if (!prod) { setErr(`Product ${nt.productCode} not found in ${nt.from}`); return; }
+      if (prod.available < nt.qty) { setErr(`Only ${prod.available} units available in ${nt.from}`); return; }
+      const nft = nt.highValue ? mintNFT() : null;
+      setTransfers(prev => [...prev, {
+        ...nt, id:`TRF-${String(prev.length+1).padStart(3,"0")}`,
+        product:prod.name, status:"done", date:today(), nft, verified:!!nft,
+      }]);
+      setProducts(prev => {
+        const updated = [...prev];
+        const src = updated.findIndex(p => p.code===nt.productCode && p.warehouse===nt.from);
+        if (src>=0) updated[src]={...updated[src],onHand:updated[src].onHand-nt.qty,available:updated[src].available-nt.qty};
+        const dst = updated.findIndex(p => p.code===nt.productCode && p.warehouse===nt.to);
+        if (dst>=0) updated[dst]={...updated[dst],onHand:updated[dst].onHand+nt.qty,available:updated[dst].available+nt.qty};
+        else updated.push({...prod,id:Date.now(),warehouse:nt.to,onHand:nt.qty,reserved:0,available:nt.qty});
+        return updated;
+      });
+    }
     setAddOpen(false);
     setNt({ from:"WH/Main", to:"WH/North", productCode:"", qty:1, highValue:false });
   };
@@ -844,13 +877,18 @@ export function Transfers({ transfers, setTransfers, products, setProducts }) {
           <span style={{ fontSize:13, fontWeight:600, color:"#F0EDE8", fontFamily:SANS }}>Blockchain Ledger</span>
           <span style={{ fontSize:9, padding:"1px 6px", borderRadius:3, background:"#6D28D933", color:"#C4B5FD", fontWeight:700, letterSpacing:"0.06em", fontFamily:SANS }}>IMMUTABLE</span>
         </div>
-        {blockchainLog.map((b,i) => (
+        
+        {transfers.filter(t => t.nft).length === 0 && (
+           <div style={{ fontSize:12, color:"#57534e", fontFamily:SANS, padding:"10px 0" }}>No high-value transfers recorded yet.</div>
+        )}
+        
+        {transfers.filter(t => t.nft).map((t,i) => (
           <div key={i} style={{ background:"#1E2D3D", borderRadius:5, padding:"10px 12px", marginBottom:6, border:"1px solid #2A3D52" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
               <div>
-                <div style={{ fontFamily:MONO, fontSize:11, color:"#A8D5D6", marginBottom:3 }}>{b.hash}</div>
-                <div style={{ fontSize:12, color:"#D6D0C8", fontFamily:SANS }}>{b.event} · {b.product}</div>
-                <div style={{ fontSize:11, color:"#57534e", fontFamily:MONO, marginTop:2 }}>Serial: {b.serial} · {b.ts}</div>
+                <div style={{ fontFamily:MONO, fontSize:11, color:"#A8D5D6", marginBottom:3 }}>{t.nft}</div>
+                <div style={{ fontSize:12, color:"#D6D0C8", fontFamily:SANS }}>Transfer {t.from} → {t.to} · {t.product}</div>
+                <div style={{ fontSize:11, color:"#57534e", fontFamily:MONO, marginTop:2 }}>ID: {t.id} · {t.date}</div>
               </div>
               <span style={{ fontSize:10, padding:"2px 8px", borderRadius:3, background:"#2D7D4633", color:"#9ED4B0", fontWeight:600, fontFamily:SANS }}>✓ Verified</span>
             </div>
@@ -927,10 +965,38 @@ export function Transfers({ transfers, setTransfers, products, setProducts }) {
 }
 
 // ─── VENDORS ───────────────────────────────────────────────────────────────────
-export function Vendors() {
-  const [vendors, setVendors] = useState(initVendors);
+export function Vendors({ vendors=[], setVendors, onAdd, onUpdate, onDelete }) {
   const [addOpen, setAddOpen] = useState(false);
+  const [err,     setErr]     = useState("");
+  const [saving,  setSaving]  = useState(false);
   const [nv, setNv] = useState({ name:"", contact:"", email:"", phone:"", category:"Furniture", rating:4.0, onTime:90, totalOrders:0, outstanding:0 });
+
+  const safeVendors = vendors || [];
+
+  const handleAdd = async () => {
+    setErr("");
+    if (!nv.name.trim()) { setErr("Company name is required."); return; }
+    setSaving(true);
+    if (onAdd) {
+      const result = await onAdd({
+        name:nv.name, contact_name:nv.contact, email:nv.email,
+        phone:nv.phone, category:nv.category, rating:nv.rating,
+        on_time_pct:nv.onTime, lead_days:7, outstanding:nv.outstanding,
+      });
+      if (!result.ok) { setErr(result.error || "Failed to save vendor."); setSaving(false); return; }
+    } else {
+      setVendors(p => [...p, { ...nv, id:Date.now() }]);
+    }
+    setSaving(false);
+    setAddOpen(false);
+    setNv({ name:"", contact:"", email:"", phone:"", category:"Furniture", rating:4.0, onTime:90, totalOrders:0, outstanding:0 });
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm("Archive this vendor?")) return;
+    if (onDelete) await onDelete(id);
+    else setVendors(p => p.filter(v => v.id !== id));
+  };
 
   return (
     <div>
@@ -939,11 +1005,12 @@ export function Vendors() {
         sub="Supplier profiles · Performance ratings · Payment tracking"
         actions={<Btn Icon={Plus} variant="primary" onClick={() => setAddOpen(true)}>Add Vendor</Btn>}
       />
+      {err && <div style={{ background:T.redL, border:`1px solid ${T.redB}`, borderRadius:6, padding:"10px 14px", marginBottom:14, fontSize:13, color:T.red, fontFamily:SANS }}>⚠ {err}</div>}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:18 }}>
-        <KPI label="Total Vendors"  value={vendors.length}                                                         sub="active suppliers" Icon={Users}      />
-        <KPI label="Outstanding"    value={fmtK(vendors.reduce((a,v)=>a+v.outstanding,0))}                         sub="pending payments" Icon={DollarSign} accent={T.amber} />
-        <KPI label="Avg On-Time"    value={`${Math.round(vendors.reduce((a,v)=>a+v.onTime,0)/vendors.length)}%`}   sub="delivery rate"    Icon={Truck}      accent={T.green} />
-        <KPI label="Avg Rating"     value={`${(vendors.reduce((a,v)=>a+v.rating,0)/vendors.length).toFixed(1)}★`}  sub="satisfaction"     Icon={Star}       accent={T.amber} />
+        <KPI label="Total Vendors"  value={safeVendors.length}                                                                  sub="active suppliers" Icon={Users}      />
+        <KPI label="Outstanding"    value={fmtK(safeVendors.reduce((a,v)=>a+(v.outstanding||0),0))}                             sub="pending payments" Icon={DollarSign} accent={T.amber} />
+        <KPI label="Avg On-Time"    value={safeVendors.length?`${Math.round(safeVendors.reduce((a,v)=>a+(v.onTime||0),0)/safeVendors.length)}%`:"—"} sub="delivery rate" Icon={Truck} accent={T.green} />
+        <KPI label="Avg Rating"     value={safeVendors.length?`${(safeVendors.reduce((a,v)=>a+(v.rating||0),0)/safeVendors.length).toFixed(1)}★`:"—"} sub="satisfaction"  Icon={Star}  accent={T.amber} />
       </div>
 
       {addOpen && (
@@ -958,14 +1025,14 @@ export function Vendors() {
             ))}
           </div>
           <div style={{ display:"flex", gap:7, marginTop:12, justifyContent:"flex-end" }}>
-            <Btn onClick={() => setAddOpen(false)}>Cancel</Btn>
-            <Btn variant="primary" Icon={Plus} onClick={() => { setVendors(p=>[...p,{...nv,id:Date.now()}]); setAddOpen(false); }}>Save Vendor</Btn>
+            <Btn onClick={() => { setAddOpen(false); setErr(""); }}>Cancel</Btn>
+            <Btn variant="primary" Icon={Plus} onClick={handleAdd} disabled={saving}>{saving?"Saving…":"Save Vendor"}</Btn>
           </div>
         </div>
       )}
 
       <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:14 }}>
-        {vendors.map(v => (
+        {safeVendors.map(v => (
           <div key={v.id} style={{ background:T.surfBg, border:`1px solid ${T.bdr}`, borderRadius:6, padding:"14px 16px" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:12 }}>
               <div>
@@ -973,13 +1040,16 @@ export function Vendors() {
                 <div style={{ fontSize:12, color:T.t3, fontFamily:SANS, marginTop:2 }}>{v.contact} · {v.email}</div>
                 <div style={{ fontSize:11, color:T.t3, fontFamily:SANS }}>{v.phone}</div>
               </div>
-              <div style={{ textAlign:"right" }}>
-                <div style={{ fontSize:16, fontWeight:800, color:T.amber, fontFamily:MONO }}>{v.rating.toFixed(1)}★</div>
+              <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+                <div style={{ fontSize:16, fontWeight:800, color:T.amber, fontFamily:MONO }}>{Number(v.rating||0).toFixed(1)}★</div>
                 <span style={{ fontSize:11, padding:"2px 7px", borderRadius:3, fontWeight:500, background:T.tealL, color:T.teal, border:`1px solid ${T.tealM}`, fontFamily:SANS }}>{v.category}</span>
+                <button onClick={() => handleDelete(v.id)} style={{ background:"none", border:"none", cursor:"pointer", color:T.t3, fontSize:11, fontFamily:SANS, padding:0, marginTop:2 }}>
+                  Archive ×
+                </button>
               </div>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
-              {[["On-Time",`${v.onTime}%`,v.onTime>=90?T.green:v.onTime>=75?T.amber:T.red],["Orders",v.totalOrders,T.teal],["Outstanding",fmtINR(v.outstanding),v.outstanding>50000?T.red:T.t1]].map(([lbl,val,color])=>(
+              {[["On-Time",`${v.onTime||0}%`,(v.onTime||0)>=90?T.green:(v.onTime||0)>=75?T.amber:T.red],["Orders",v.totalOrders||0,T.teal],["Outstanding",fmtINR(v.outstanding||0),(v.outstanding||0)>50000?T.red:T.t1]].map(([lbl,val,color])=>(
                 <div key={lbl} style={{ background:T.pageBg, borderRadius:4, padding:"8px 10px", border:`1px solid ${T.bdr}` }}>
                   <div style={{ fontSize:10, color:T.t4, fontFamily:SANS, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:3 }}>{lbl}</div>
                   <div style={{ fontSize:14, fontWeight:700, fontFamily:MONO, color }}>{val}</div>
@@ -988,14 +1058,19 @@ export function Vendors() {
             </div>
             <div style={{ marginTop:10 }}>
               <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3, fontSize:11, color:T.t3, fontFamily:SANS }}>
-                <span>On-time performance</span><span>{v.onTime}%</span>
+                <span>On-time performance</span><span>{v.onTime||0}%</span>
               </div>
               <div style={{ height:5, background:T.surfAlt, borderRadius:99 }}>
-                <div style={{ width:`${v.onTime}%`, height:"100%", background:v.onTime>=90?T.green:v.onTime>=75?T.amber:T.red, borderRadius:99 }}/>
+                <div style={{ width:`${Math.min(v.onTime||0,100)}%`, height:"100%", background:(v.onTime||0)>=90?T.green:(v.onTime||0)>=75?T.amber:T.red, borderRadius:99 }}/>
               </div>
             </div>
           </div>
         ))}
+        {safeVendors.length === 0 && (
+          <div style={{ gridColumn:"1/-1", padding:"40px 0", textAlign:"center", color:T.t3, fontFamily:SANS, fontSize:13 }}>
+            No vendors yet — add your first supplier above.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1003,9 +1078,23 @@ export function Vendors() {
 
 // ─── USERS & ROLES ─────────────────────────────────────────────────────────────
 export function UsersRoles() {
-  const [users, setUsers] = useState(initUsers);
+  const { users, addUser, removeUser, usersOnline } = useHighPriority();
   const [addOpen, setAddOpen] = useState(false);
-  const [nu, setNu] = useState({ name:"", email:"", role:"staff", warehouse:"WH/Main", status:"active" });
+  const [nu, setNu]     = useState({ name:"", email:"", password:"Admin@123", role:"staff", warehouse:"WH/Main", status:"active" });
+  const [err, setErr]   = useState("");
+
+  const handleAdd = async () => {
+    setErr("");
+    if (!nu.name || !nu.email) { setErr("Name and email are required."); return; }
+    const result = await addUser(nu);
+    if (!result.ok) { setErr(result.error || "Failed to create user."); return; }
+    setAddOpen(false);
+    setNu({ name:"", email:"", password:"Admin@123", role:"staff", warehouse:"WH/Main", status:"active" });
+  };
+
+  const handleRemove = async (id) => {
+    await removeUser(id);
+  };
 
   const roleCfg = {
     admin:   { bg:T.redL,    fg:T.red,    label:"Admin"   },
@@ -1025,7 +1114,7 @@ export function UsersRoles() {
     <div>
       <PageTitle
         title="Users & Roles"
-        sub="Role-based access control · Warehouse assignments"
+        sub={`Role-based access control · Warehouse assignments${usersOnline?" · 🟢 Live":" · 🟡 Offline"}`}
         actions={<Btn Icon={Plus} variant="primary" onClick={() => setAddOpen(true)}>Add User</Btn>}
       />
 
@@ -1050,8 +1139,9 @@ export function UsersRoles() {
 
       {addOpen && (
         <div style={{ background:T.tealL, border:`1px solid ${T.tealM}`, borderRadius:6, padding:14, marginBottom:14 }}>
+          {err && <AlertBanner type="error">{err}</AlertBanner>}
           <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:9 }}>
-            {[["Full Name","name","text"],["Email","email","text"]].map(([lbl,k,tp])=>(
+            {[["Full Name","name","text"],["Email","email","text"],["Password","password","text"]].map(([lbl,k,tp])=>(
               <div key={k}>
                 <div style={{ fontSize:10, color:T.t4, fontWeight:600, marginBottom:4, textTransform:"uppercase", letterSpacing:"0.06em", fontFamily:SANS }}>{lbl}</div>
                 <input type={tp} value={nu[k]} onChange={e=>setNu(p=>({...p,[k]:e.target.value}))}
@@ -1073,9 +1163,12 @@ export function UsersRoles() {
               </select>
             </div>
           </div>
+          <div style={{ marginTop:8, fontSize:11, color:T.t3, fontFamily:SANS }}>
+            💡 Default password is set to "Admin@123". User should change it on first login.
+          </div>
           <div style={{ display:"flex", gap:7, marginTop:12, justifyContent:"flex-end" }}>
-            <Btn onClick={() => setAddOpen(false)}>Cancel</Btn>
-            <Btn variant="primary" Icon={Plus} onClick={() => { setUsers(p=>[...p,{...nu,id:Date.now(),lastLogin:"Never"}]); setAddOpen(false); }}>Create User</Btn>
+            <Btn onClick={() => { setAddOpen(false); setErr(""); }}>Cancel</Btn>
+            <Btn variant="primary" Icon={Plus} onClick={handleAdd}>Create User</Btn>
           </div>
         </div>
       )}
@@ -1110,7 +1203,7 @@ export function UsersRoles() {
                     </span>
                   </TD>
                   <TD>
-                    <button onClick={() => setUsers(p=>p.filter(x=>x.id!==u.id))}
+                    <button onClick={() => handleRemove(u.id)}
                       style={{ background:"none", border:"none", cursor:"pointer", color:T.t3, padding:3 }}>
                       <Trash2 size={12}/>
                     </button>
