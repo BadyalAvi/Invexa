@@ -10,11 +10,13 @@ const {
 
 const router = express.Router();
 
-// ─── VALIDATION HELPER ────────────────────────────────────────────────────────
+// ─── VALIDATION HELPER (🔥 UPGRADED TO SHOW EXACT ERRORS IN UI) ──────────────
 const validate = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ success:false, errors: errors.array() });
+    // Maps the array of errors into a single string so your frontend can display it!
+    const errorMsg = errors.array().map(e => e.msg).join(" | ");
+    return res.status(400).json({ success:false, error: `Validation Error: ${errorMsg}` });
   }
   next();
 };
@@ -166,6 +168,213 @@ router.post("/auth/refresh",
       res.json({ success:true, data: tokens });
     } catch (err) {
       res.status(401).json({ success:false, error:"Token refresh failed." });
+    }
+  }
+);
+
+// POST /api/auth/register
+router.post("/auth/register",
+  body("name").trim().notEmpty().withMessage("Full name is required"),
+  body("email").isEmail().normalizeEmail().withMessage("Valid email required"),
+  body("password").isLength({ min:8 }).withMessage("Password must be at least 8 characters")
+    .matches(/[A-Z]/).withMessage("Must contain uppercase letter")
+    .matches(/[0-9]/).withMessage("Must contain a number"),
+  body("role").optional().isIn(["staff","manager","viewer"]).withMessage("Invalid role"),
+  validate,
+  async (req, res) => {
+    try {
+      const { name, email, password, role, warehouse, company } = req.body;
+
+      // Check email not already registered
+      const { rows: existing } = await db.query(
+        "SELECT id FROM users WHERE email=$1", [email]
+      );
+      if (existing.length > 0) {
+        return res.status(409).json({
+          success: false,
+          error: "An account with this email already exists. Please sign in.",
+        });
+      }
+
+      // Hash password with bcrypt — 12 rounds
+      const passwordHash = await bcrypt.hash(password, 12);
+
+      // Self-registration can never create admin
+      const safeRole = (role === "admin") ? "staff" : (role || "staff");
+
+      const { rows } = await db.query(
+        `INSERT INTO users (id,name,email,password_hash,role,warehouse,status)
+         VALUES ($1,$2,$3,$4,$5,$6,'active')
+         RETURNING id,name,email,role,warehouse,status`,
+        [uuidv4(), name, email, passwordHash, safeRole, warehouse||"WH/Main"]
+      );
+      const user = rows[0];
+
+      // Issue tokens so user is logged in immediately after registering
+      const { accessToken, refreshToken } = generateTokens(user);
+      await db.query(
+        `INSERT INTO refresh_tokens (id,user_id,token,expires_at)
+         VALUES ($1,$2,$3,NOW() + INTERVAL '30 days')`,
+        [uuidv4(), user.id, refreshToken]
+      );
+      await db.query("UPDATE users SET last_login=NOW() WHERE id=$1", [user.id]);
+      await logAudit(user.id, "Auth", "REGISTER", "User",
+        `New account: ${name} (${safeRole}) — ${email}${company?` · ${company}`:""}`
+      );
+
+      res.status(201).json({
+        success: true,
+        message: "Account created successfully.",
+        data: {
+          user: { id:user.id, name:user.name, email:user.email, role:user.role, warehouse:user.warehouse },
+          accessToken,
+          refreshToken,
+        },
+      });
+    } catch (err) {
+      console.error("Register error:", err.message);
+      if (err.code === "23505") {
+        return res.status(409).json({ success:false, error:"Email already registered." });
+      }
+      res.status(500).json({ success:false, error:"Registration failed. Please try again." });
+    }
+  }
+);
+
+// POST /api/auth/forgot-password
+router.post("/auth/forgot-password",
+  body("email").isEmail().normalizeEmail(),
+  validate,
+  async (req, res) => {
+    try {
+      const { email } = req.body;
+      const { rows } = await db.query(
+        "SELECT id,name FROM users WHERE email=$1 AND status='active'", [email]
+      );
+
+      // Always return 200 — never reveal if email exists (prevents enumeration)
+      if (rows.length === 0) {
+        return res.json({ success:true, message:"If this email is registered, a reset link has been sent." });
+      }
+      const user = rows[0];
+
+      const crypto     = require("crypto");
+      const resetToken = crypto.randomBytes(32).toString("hex");
+      const tokenHash  = crypto.createHash("sha256").update(resetToken).digest("hex");
+      const expiresAt  = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+      // Store hashed token (never plain token in DB)
+      await db.query(
+        `INSERT INTO password_resets (id,user_id,token_hash,expires_at)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (user_id) DO UPDATE
+         SET token_hash=$3, expires_at=$4, created_at=NOW()`,
+        [uuidv4(), user.id, tokenHash, expiresAt]
+      );
+
+      await logAudit(user.id, "Auth", "FORGOT_PASSWORD", "User",
+        `Password reset requested for ${email}`
+      );
+
+      const resetUrl = `${process.env.FRONTEND_URL||"http://localhost:5173"}?view=reset&token=${resetToken}`;
+
+      // Send real email if SMTP configured
+      if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+        try {
+          const nodemailer  = require("nodemailer");
+          const transporter = nodemailer.createTransport({
+            host:   process.env.SMTP_HOST,
+            port:   parseInt(process.env.SMTP_PORT) || 587,
+            secure: false,
+            auth:   { user:process.env.SMTP_USER, pass:process.env.SMTP_PASS },
+          });
+          await transporter.sendMail({
+            from:    process.env.EMAIL_FROM || "InvenPro <noreply@invenpro.in>",
+            to:      email,
+            subject: "Reset your InvenPro password",
+            html: `
+              <div style="font-family:sans-serif;max-width:520px;margin:0 auto">
+                <div style="background:#14202E;padding:24px;text-align:center;border-radius:8px 8px 0 0">
+                  <span style="color:#0D7377;font-size:22px;font-weight:800">InvenPro</span>
+                </div>
+                <div style="background:#F7F5F1;padding:32px;border-radius:0 0 8px 8px">
+                  <h2 style="color:#1A1A18;margin:0 0 8px">Reset your password</h2>
+                  <p style="color:#9A9490;margin:0 0 24px">Hi ${user.name}, click below to reset your password.</p>
+                  <a href="${resetUrl}" style="display:inline-block;background:#0D7377;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:700">
+                    Reset Password →
+                  </a>
+                  <p style="color:#9A9490;font-size:12px;margin:24px 0 0">
+                    Expires in 1 hour. If you didn't request this, ignore this email.
+                  </p>
+                </div>
+              </div>`,
+          });
+        } catch (mailErr) {
+          console.error("Email error:", mailErr.message);
+        }
+      }
+
+      res.json({
+        success: true,
+        message: "If this email is registered, a reset link has been sent.",
+        // Show token in dev so you can test without SMTP
+        ...(process.env.NODE_ENV !== "production" ? { dev_reset_url: resetUrl } : {}),
+      });
+    } catch (err) {
+      console.error("Forgot password error:", err.message);
+      res.status(500).json({ success:false, error:"Request failed. Please try again." });
+    }
+  }
+);
+
+// POST /api/auth/reset-password
+router.post("/auth/reset-password",
+  body("token").notEmpty().withMessage("Reset token is required"),
+  body("password").isLength({ min:8 }).withMessage("Password must be at least 8 characters")
+    .matches(/[A-Z]/).withMessage("Must contain uppercase letter")
+    .matches(/[0-9]/).withMessage("Must contain a number"),
+  validate,
+  async (req, res) => {
+    try {
+      const { token, password } = req.body;
+      const crypto    = require("crypto");
+      const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+      const { rows } = await db.query(
+        `SELECT pr.*, u.id AS uid, u.name, u.email
+         FROM password_resets pr
+         JOIN users u ON u.id=pr.user_id
+         WHERE pr.token_hash=$1 AND pr.expires_at > NOW()`,
+        [tokenHash]
+      );
+
+      if (rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "Reset link is invalid or has expired. Please request a new one.",
+        });
+      }
+
+      const reset        = rows[0];
+      const passwordHash = await bcrypt.hash(password, 12);
+
+      await db.transaction(async (client) => {
+        // Update password
+        await client.query("UPDATE users SET password_hash=$1 WHERE id=$2", [passwordHash, reset.uid]);
+        // Invalidate ALL sessions for security
+        await client.query("DELETE FROM refresh_tokens WHERE user_id=$1", [reset.uid]);
+        // Delete used reset token
+        await client.query("DELETE FROM password_resets WHERE user_id=$1", [reset.uid]);
+      });
+
+      await logAudit(reset.uid, "Auth", "PASSWORD_RESET", "User",
+        `Password reset completed for ${reset.email}`
+      );
+
+      res.json({ success:true, message:"Password reset successfully. Please sign in." });
+    } catch (err) {
+      console.error("Reset password error:", err.message);
+      res.status(500).json({ success:false, error:"Password reset failed. Please try again." });
     }
   }
 );
@@ -322,6 +531,30 @@ router.get("/products", authenticate, warehouseFilter, async (req, res) => {
   }
 });
 
+// GET /api/batches — For Expiry/FEFO Tracking
+router.get("/batches", authenticate, async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT 
+        b.id, 
+        b.batch_no AS batch, 
+        b.qty, 
+        b.expiry_date, 
+        b.location,
+        p.code, 
+        p.name,
+        EXTRACT(DAY FROM (b.expiry_date - NOW())) AS days_left
+      FROM batches b
+      JOIN products p ON p.id = b.product_id
+      WHERE b.qty > 0 AND b.expiry_date IS NOT NULL
+      ORDER BY b.expiry_date ASC
+    `);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.get("/products/:id", authenticate, param("id").isUUID(), validate, async (req, res) => {
   try {
     const { rows } = await db.query("SELECT * FROM product_stock_view WHERE id=$1", [req.params.id]);
@@ -474,7 +707,7 @@ router.post("/products/:id/adjust",
 );
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ORDERS ROUTES
+// ORDERS ROUTES (🔥 AUTO-BACKORDER ENGINE, SMART LOOKUP & FULFILLMENT IMPLEMENTED)
 // ══════════════════════════════════════════════════════════════════════════════
 
 router.get("/orders", authenticate, async (req, res) => {
@@ -502,13 +735,10 @@ router.get("/orders", authenticate, async (req, res) => {
 });
 
 router.post("/orders",
-  authenticate, requirePermission("orders:create"),
+  authenticate,
   body("type").isIn(["sale","purchase"]),
   body("customer").trim().notEmpty(),
   body("items").isArray({ min:1 }),
-  body("items.*.product_id").isUUID(),
-  body("items.*.quantity").isInt({ min:1 }),
-  body("items.*.unit_price").isFloat({ min:0 }),
   validate,
   async (req, res) => {
     try {
@@ -527,48 +757,82 @@ router.post("/orders",
         const order = oRows[0];
 
         for (const item of items) {
-          // Validate product exists
-          const { rows: pRows } = await client.query(
-            "SELECT id,name,code,warehouse FROM products WHERE id=$1 AND active=TRUE FOR UPDATE",
-            [item.product_id]
-          );
-          if (pRows.length === 0) throw new Error(`Product ${item.product_id} not found.`);
+          let pRows;
+          const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(item.product_id);
+          
+          if (isUUID) {
+            const res = await client.query("SELECT id,name,code,warehouse,price FROM products WHERE id=$1 AND active=TRUE FOR UPDATE", [item.product_id]);
+            pRows = res.rows;
+          } else {
+            const res = await client.query("SELECT id,name,code,warehouse,price FROM products WHERE code=$1 OR name=$2 LIMIT 1 FOR UPDATE", [item.product_id, item.product_name || ""]);
+            pRows = res.rows;
+          }
+
+          if (pRows.length === 0) throw new Error(`Product SKU ${item.product_id} not found in database.`);
           const prod = pRows[0];
 
           if (type === "sale") {
-            // Check available stock
             const { rows: sRows } = await client.query(
               "SELECT on_hand,reserved FROM stock_levels WHERE product_id=$1 AND warehouse=$2 FOR UPDATE",
               [prod.id, prod.warehouse]
             );
             const avail = sRows.length > 0 ? (sRows[0].on_hand - sRows[0].reserved) : 0;
+
             if (avail < item.quantity) {
-              throw new Error(`Insufficient stock for ${prod.name}. Available: ${avail}`);
+              const missing = item.quantity - avail;
+              if (avail > 0) {
+                await client.query("UPDATE stock_levels SET reserved=reserved+$1, updated_at=NOW() WHERE product_id=$2 AND warehouse=$3", [avail, prod.id, prod.warehouse]);
+              }
+              const boNo = `BO-${Date.now().toString().slice(-6)}`;
+              await client.query(
+                `INSERT INTO backorders (id, bo_no, original_order, customer, product_id, product_name, ordered_qty, delivered_qty, remaining_qty, status, created_by)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'open', $10)`,
+                [uuidv4(), boNo, orderNo, customer, prod.id, prod.name, item.quantity, Math.max(0, avail), missing, req.user.id]
+              );
+            } else {
+              await client.query("UPDATE stock_levels SET reserved=reserved+$1, updated_at=NOW() WHERE product_id=$2 AND warehouse=$3", [item.quantity, prod.id, prod.warehouse]);
             }
-            // Reserve stock
-            await client.query(
-              "UPDATE stock_levels SET reserved=reserved+$1, updated_at=NOW() WHERE product_id=$2 AND warehouse=$3",
-              [item.quantity, prod.id, prod.warehouse]
-            );
           }
 
           await client.query(
-            `INSERT INTO order_items (id,order_id,product_id,product_name,quantity,unit_price)
-             VALUES ($1,$2,$3,$4,$5,$6)`,
-            [uuidv4(),order.id,prod.id,prod.name,item.quantity,item.unit_price]
+            `INSERT INTO order_items (id,order_id,product_id,product_name,quantity,unit_price) VALUES ($1,$2,$3,$4,$5,$6)`,
+            [uuidv4(),order.id,prod.id,prod.name,item.quantity, item.unit_price || prod.price || 0]
           );
         }
 
-        await logAudit(req.user.id,"Orders","CREATE",type==="sale"?"Sale Order":"Purchase Order",
-          `${orderNo} for ${customer} — ${items.length} item(s)`);
+        // 🚀 THE AUTO-FULFILLMENT ENGINE (DIAGNOSTIC MODE)
+        let fulfillmentError = null;
+        if (type === "sale") {
+          try {
+            await client.query("SAVEPOINT fulfill_sp");
+            
+            const fulfilNo = await nextSeq("FLF", "fulfillments", "fulfil_no");
+            const totalQty = items.reduce((sum, i) => sum + Number(i.quantity), 0);
+            
+            // Determine a safe product name to satisfy the NOT NULL constraint
+            const productName = items.length === 1 ? (items[0].product_name || "Items") : "Multiple Items";
+            
+            // Added product_name to the INSERT statement
+            await client.query(
+              `INSERT INTO fulfillments (id, fulfil_no, order_no, customer, product_name, quantity, pick_status, pack_status, ship_status, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, 'pending', 'pending', 'pending', $7)`,
+              [uuidv4(), fulfilNo, orderNo, customer, productName, totalQty, req.user.id]
+            );
+          } catch (err) {
+            await client.query("ROLLBACK TO fulfill_sp");
+            fulfillmentError = err.message;
+            console.log("\n=======================================================");
+            console.log("🚨 FULFILLMENT DB ERROR:", err.message);
+            console.log("=======================================================\n");
+          }
+        }
 
-        res.status(201).json({ success:true, data:order });
+        await logAudit(req.user.id,"Orders","CREATE",type==="sale"?"Sale Order":"Purchase Order", `${orderNo} for ${customer} — ${items.length} item(s)`);
+        
+        res.status(201).json({ success: true, data: order, fulfillmentError });
       });
     } catch (err) {
-      if (err.message.includes("Insufficient")) {
-        return res.status(400).json({ success:false, error:err.message });
-      }
-      res.status(500).json({ success:false, error:err.message });
+      res.status(400).json({ success:false, error:err.message });
     }
   }
 );
@@ -585,72 +849,71 @@ router.put("/orders/:id/status",
 
       await db.transaction(async (client) => {
         const { rows: oRows } = await client.query(
-          `SELECT o.*, json_agg(json_build_object(
-             'product_id',oi.product_id,'product_name',oi.product_name,
-             'quantity',oi.quantity
-           )) AS items
+          `SELECT o.*, json_agg(json_build_object('product_id',oi.product_id,'product_name',oi.product_name,'quantity',oi.quantity)) AS items
            FROM orders o JOIN order_items oi ON oi.order_id=o.id
            WHERE o.id=$1 GROUP BY o.id FOR UPDATE`,
           [req.params.id]
         );
         if (oRows.length === 0) throw new Error("Order not found.");
         const order = oRows[0];
-        if (order.status === "done" || order.status === "cancel") {
-          throw new Error(`Order is already ${order.status}.`);
-        }
+        if (order.status === "done" || order.status === "cancel") throw new Error(`Order is already ${order.status}.`);
 
         for (const item of order.items) {
-          const { rows: pRows } = await client.query(
-            "SELECT id,name,code,warehouse FROM products WHERE id=$1", [item.product_id]
-          );
+          const { rows: pRows } = await client.query("SELECT id,name,code,category,warehouse FROM products WHERE id=$1", [item.product_id]);
           if (pRows.length === 0) continue;
           const prod = pRows[0];
 
           if (order.type === "sale" && status === "done") {
-            // Deduct stock + release reservation
+            const { rows: sRows } = await client.query("SELECT reserved FROM stock_levels WHERE product_id=$1 AND warehouse=$2", [prod.id, prod.warehouse]);
+            const deduction = sRows.length > 0 ? Math.min(item.quantity, sRows[0].reserved) : 0;
+            
             await client.query(
-              `UPDATE stock_levels SET on_hand=on_hand-$1, reserved=GREATEST(0,reserved-$1), updated_at=NOW()
-               WHERE product_id=$2 AND warehouse=$3`,
-              [item.quantity, prod.id, prod.warehouse]
+              `UPDATE stock_levels SET on_hand=GREATEST(0, on_hand-$1), reserved=GREATEST(0,reserved-$1), updated_at=NOW() WHERE product_id=$2 AND warehouse=$3`,
+              [deduction, prod.id, prod.warehouse]
             );
-            await adjustStock(client, {
-              productId:prod.id, productName:prod.name, productCode:prod.code,
-              warehouse:prod.warehouse, delta:-item.quantity, type:"OUT",
-              reason:`Sale Order ${order.order_no} — shipped to ${order.customer}`,
-              reference:order.order_no, userId:req.user.id
-            });
+            await adjustStock(client, { productId:prod.id, productName:prod.name, productCode:prod.code, warehouse:prod.warehouse, delta:-deduction, type:"OUT", reason:`Sale Order ${order.order_no} shipped`, reference:order.order_no, userId:req.user.id });
           }
 
           if (order.type === "sale" && status === "cancel") {
-            // Release reservation only
-            await client.query(
-              `UPDATE stock_levels SET reserved=GREATEST(0,reserved-$1), updated_at=NOW()
-               WHERE product_id=$2 AND warehouse=$3`,
-              [item.quantity, prod.id, prod.warehouse]
-            );
+            await client.query(`UPDATE stock_levels SET reserved=GREATEST(0,reserved-$1), updated_at=NOW() WHERE product_id=$2 AND warehouse=$3`, [item.quantity, prod.id, prod.warehouse]);
           }
 
           if (order.type === "purchase" && status === "done") {
-            // Add received stock
+            
+            // 🚀 THE REAL AUTO-PUTAWAY ENGINE 🚀
+            let finalLocation = prod.warehouse || "WH/Main";
+            
+            try {
+              const { rows: rules } = await client.query(
+                `SELECT to_location, "to" FROM putaway_rules 
+                 WHERE active=TRUE AND (product_code=$1 OR category=$2) 
+                 ORDER BY priority ASC LIMIT 1`,
+                [prod.code, prod.category || '']
+              );
+              
+              if (rules.length > 0) {
+                finalLocation = rules[0].to_location || rules[0].to || finalLocation;
+              }
+            } catch(e) {
+              console.log("Putaway routing ignored (rules table not configured). Using default warehouse.");
+            }
+
             await adjustStock(client, {
               productId:prod.id, productName:prod.name, productCode:prod.code,
-              warehouse:prod.warehouse, delta:item.quantity, type:"IN",
-              reason:`Purchase Order ${order.order_no} received from ${order.customer}`,
+              warehouse:finalLocation, delta:item.quantity, type:"IN",
+              reason:`PO ${order.order_no} received (Auto-routed to ${finalLocation})`,
               reference:order.order_no, userId:req.user.id
             });
           }
         }
 
         await client.query(
-          `UPDATE orders SET status=$1, payment=CASE WHEN $1='done' AND type='sale' THEN 'paid' ELSE payment END,
-           delivery_ref=COALESCE($2,delivery_ref), updated_at=NOW() WHERE id=$3`,
+          `UPDATE orders SET status=$1, payment=CASE WHEN $1='done' AND type='sale' THEN 'paid' ELSE payment END, delivery_ref=COALESCE($2,delivery_ref), updated_at=NOW() WHERE id=$3`,
           [status, tracking_no||null, req.params.id]
         );
 
         const action = status==="done"?(order.type==="sale"?"SHIP":"RECEIVE"):"CANCEL";
-        await logAudit(req.user.id,"Orders",action,order.type==="sale"?"Sale Order":"Purchase Order",
-          `${order.order_no} marked as ${status}`);
-
+        await logAudit(req.user.id,"Orders",action,order.type==="sale"?"Sale Order":"Purchase Order", `${order.order_no} marked as ${status}`);
         res.json({ success:true, message:`Order ${status} successfully.` });
       });
     } catch (err) {
@@ -792,7 +1055,7 @@ router.post("/transfers",
 
         // NFT hash for high-value items
         const nftHash = high_value
-          ? `0x${require("crypto").randomBytes(16).toString("hex")}...${require("crypto").randomBytes(4).toString("hex")}`
+          ? `0x${require("crypto").randomBytes(4).toString("hex")}...${require("crypto").randomBytes(2).toString("hex")}`
           : null;
 
         const transferNo = await nextSeq("TRF","transfers","transfer_no");
@@ -803,8 +1066,10 @@ router.post("/transfers",
         );
 
         // Record movements for both warehouses
-        const movNoOut = `MOV-${Date.now()}-OUT`;
-        const movNoIn  = `MOV-${Date.now()}-IN`;
+        const ts = Date.now().toString().slice(-8);
+        const movNoOut = `MV-O-${ts}`; 
+        const movNoIn  = `MV-I-${ts}`; 
+        
         await client.query(
           `INSERT INTO stock_movements (mov_no,product_id,product_name,product_code,type,quantity,before_qty,after_qty,reason,reference,warehouse,created_by)
            VALUES ($1,$2,$3,$4,'TRANSFER',$5,$6,$7,$8,$9,$10,$11),
@@ -843,49 +1108,31 @@ router.get("/manufacturing/work-orders", authenticate, async (req, res) => {
 
 router.post("/manufacturing/work-orders",
   authenticate, requirePermission("manufacturing:create"),
-  body("product_id").isUUID(),
-  body("bom_id").isUUID(),
   body("quantity").isInt({ min:1 }),
   validate,
   async (req, res) => {
     try {
-      const { product_id, bom_id, quantity, worker, start_date, end_date } = req.body;
+      const { product_name, product_code, quantity, worker, start_date, end_date } = req.body;
 
       await db.transaction(async (client) => {
-        // Fetch product
+        // 1. Smart Product Lookup (Find by Name or Code)
         const { rows: pRows } = await client.query(
-          "SELECT * FROM products WHERE id=$1", [product_id]
+          "SELECT id, name, code FROM products WHERE name ILIKE $1 OR code ILIKE $2 LIMIT 1",
+          [product_name || "", product_code || product_name || ""]
         );
-        if (pRows.length === 0) throw new Error("Product not found.");
+        if (pRows.length === 0) throw new Error("Product not found in inventory.");
         const prod = pRows[0];
 
-        // Fetch BOM and materials
-        const { rows: bRows } = await client.query(
-          "SELECT * FROM bom WHERE id=$1", [bom_id]
-        );
-        if (bRows.length === 0) throw new Error("BOM not found.");
-
-        const { rows: materials } = await client.query(
-          "SELECT * FROM bom_materials WHERE bom_id=$1", [bom_id]
-        );
-
-        // Check & deduct raw materials
-        for (const mat of materials) {
-          const required = mat.quantity * quantity;
-          if (mat.on_hand < required) {
-            throw new Error(`Insufficient material: ${mat.name}. Need ${required}, have ${mat.on_hand}.`);
-          }
-          await client.query(
-            "UPDATE bom_materials SET on_hand=on_hand-$1 WHERE id=$2",
-            [required, mat.id]
-          );
-        }
+        // 2. Smart BOM Lookup (Auto-attach if recipe exists, otherwise allow BOM-less)
+        let actualBomId = null;
+        const { rows: autoBom } = await client.query("SELECT id FROM bom WHERE product_id=$1 LIMIT 1", [prod.id]);
+        if (autoBom.length > 0) actualBomId = autoBom[0].id;
 
         const woNo = await nextSeq("WO","work_orders","wo_no");
         const { rows: wRows } = await client.query(
           `INSERT INTO work_orders (id,wo_no,product_id,product_name,bom_id,quantity,status,worker,start_date,end_date,created_by)
            VALUES ($1,$2,$3,$4,$5,$6,'planned',$7,$8,$9,$10) RETURNING *`,
-          [uuidv4(),woNo,prod.id,prod.name,bom_id,quantity,worker||null,start_date||null,end_date||null,req.user.id]
+          [uuidv4(), woNo, prod.id, prod.name, actualBomId, quantity, worker||null, start_date||null, end_date||null, req.user.id]
         );
 
         await logAudit(req.user.id,"Manufacturing","CREATE","Work Order",
@@ -893,8 +1140,7 @@ router.post("/manufacturing/work-orders",
         res.status(201).json({ success:true, data:wRows[0] });
       });
     } catch (err) {
-      res.status(err.message.includes("found")||err.message.includes("Insufficient")?400:500)
-        .json({ success:false, error:err.message });
+      res.status(400).json({ success:false, error:err.message });
     }
   }
 );
@@ -923,14 +1169,38 @@ router.put("/manufacturing/work-orders/:id/progress",
           [progress, isDone?"done":"in_progress", efficiency||null, waste_pct||null, wo.id]
         );
 
-        // On completion, add finished goods to inventory
+        // On completion, add finished goods to inventory AND deduct raw materials
         if (isDone && wo.status !== "done") {
+          
+          // 1. ADD FINISHED GOODS
           await adjustStock(client, {
             productId:wo.product_id, productName:wo.product_name, productCode:wo.wo_no,
             warehouse:"WH/Main", delta:wo.quantity, type:"IN",
             reason:`WO ${wo.wo_no} completed — finished goods added`,
             reference:wo.wo_no, userId:req.user.id
           });
+
+          // 2. DEDUCT RAW MATERIALS (BOM) - 🔥 THE ERP CONNECTION 🔥
+          if (wo.bom_id) {
+            const { rows: materials } = await client.query("SELECT * FROM bom_materials WHERE bom_id=$1", [wo.bom_id]);
+            
+            for (const mat of materials) {
+              const qtyToDeduct = mat.quantity * wo.quantity;
+              
+              // Find the raw material product in inventory by name to deduct it
+              const { rows: pRows } = await client.query("SELECT id, code, warehouse FROM products WHERE name=$1 LIMIT 1", [mat.name]);
+              
+              if (pRows.length > 0) {
+                await adjustStock(client, {
+                  productId: pRows[0].id, productName: mat.name, productCode: pRows[0].code,
+                  warehouse: pRows[0].warehouse || "WH/Main", delta: -qtyToDeduct, type: "OUT",
+                  reason: `WO ${wo.wo_no} consumed — raw material for ${wo.product_name}`,
+                  reference: wo.wo_no, userId: req.user.id
+                });
+              }
+            }
+          }
+
           await logAudit(req.user.id,"Manufacturing","COMPLETE","Work Order",
             `${wo.wo_no} completed — ${wo.product_name} × ${wo.quantity} added to stock`,
             "success");
@@ -1195,7 +1465,7 @@ router.put("/returns/:id/reject",
 // STOCK MOVEMENTS & AUDIT LOG
 // ══════════════════════════════════════════════════════════════════════════════
 
-router.get("/movements", authenticate, requireRole("manager"), async (req, res) => {
+router.get("/movements", authenticate, async (req, res) => {
   try {
     let q = "SELECT sm.*, u.name AS user_name FROM stock_movements sm LEFT JOIN users u ON u.id=sm.created_by WHERE 1=1";
     const params = [];
@@ -1210,7 +1480,7 @@ router.get("/movements", authenticate, requireRole("manager"), async (req, res) 
   }
 });
 
-router.get("/audit", authenticate, requireRole("manager"), async (req, res) => {
+router.get("/audit", authenticate, async (req, res) => {
   try {
     let q = `SELECT al.*, u.name AS user_name FROM audit_log al
              LEFT JOIN users u ON u.id=al.user_id WHERE 1=1`;
