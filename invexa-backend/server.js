@@ -29,7 +29,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
   // Add your Vercel URL here after deploying frontend
-  // "https://your-app.vercel.app",
+  "https://inventory-dashboard-ci7u98xjs-badyalavis-projects.vercel.app",
 ];
 
 app.use(cors({
